@@ -1,71 +1,86 @@
 import asyncio
-import contextlib
+import csv
 import json
-import time
-from datetime import datetime, timezone
+from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
 
 import websockets
 
-last_data = None
+
+WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@trade"
+
+BASE_DIR = Path("/Users/daniildroncev/Dev/parsing_crypto")
+OUTPUT_DIR = BASE_DIR / "data" / "raw" / "binance"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+DURATION_SECONDS = 60 * 15
 
 
-async def receiver(symbol: str):
-    global last_data
-    url = f"wss://stream.binance.com:9443/ws/{symbol.lower()}@bookTicker"
-
-    async with websockets.connect(url, ping_interval=20, ping_timeout=60) as ws:
-        while True:
-            msg = await ws.recv()
-            data = json.loads(msg)
-            last_data = data
-
-
-def ms_to_str(ms: int | None) -> str:
-    if ms is None:
-        return "None"
-    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone()
-    return dt.strftime("%Y-%m-%d %H:%M:%S.%f %Z")
-
-
-async def printer(duration_sec: int = 60):
-    global last_data
-
-    next_tick = time.time()
-
-    for i in range(duration_sec):
-        next_tick += 1
-        await asyncio.sleep(max(0, next_tick - time.time()))
-
-        local_dt = datetime.now().astimezone()
-        local_str = local_dt.strftime("%Y-%m-%d %H:%M:%S.%f %Z")
-
-        if last_data is None:
-            print(f"[{i + 1}] local_time={local_str} data=ещё нет")
-            continue
-
-        event_time_ms = last_data.get("E")
-
-        print(
-            f"[{i + 1}] "
-            f"local_time={local_str} "
-            f"event_time={ms_to_str(event_time_ms)} "
-            f"event_time_ms={event_time_ms} "
-            f"symbol={last_data['s']} "
-            f"bid={last_data['b']} ({last_data['B']}) "
-            f"ask={last_data['a']} ({last_data['A']})"
-        )
+def build_output_file() -> Path:
+    timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return OUTPUT_DIR / f"binance_btcusdt_{timestamp_str}.csv"
 
 
 async def main():
-    symbol = "BTCUSDT"
-    recv_task = asyncio.create_task(receiver(symbol))
+    output_file = build_output_file()
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
 
-    try:
-        await printer(60)
-    finally:
-        recv_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await recv_task
+    latest_by_second: dict[int, float] = {}
+
+    async with websockets.connect(WS_URL) as ws:
+        print(f"Connected to {WS_URL}")
+
+        async for message in ws:
+            if loop.time() - started_at >= DURATION_SECONDS:
+                print("Finished: 60 seconds elapsed")
+                break
+
+            if not message or not message.strip():
+                continue
+
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError:
+                print("Message is not JSON")
+                continue
+
+            # Spot trade stream payload обычно содержит:
+            # e - event type
+            # E - event time
+            # s - symbol
+            # p - price
+            symbol = data.get("s")
+            if symbol != "BTCUSDT":
+                continue
+
+            event_time = data.get("E")
+            price = data.get("p")
+
+            if event_time is None or price is None:
+                continue
+
+            second_ts = (int(event_time) // 1000) * 1000
+            latest_by_second[second_ts] = float(Decimal(price))
+
+            print(
+                f"saved-in-memory: "
+                f"symbol={symbol} "
+                f"event_time={event_time} "
+                f"second_ts={second_ts} "
+                f"price={price}"
+            )
+
+    with output_file.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["timestamp", "binance"])
+
+        for ts in sorted(latest_by_second):
+            writer.writerow([ts, latest_by_second[ts]])
+
+    print(f"CSV saved to: {output_file.resolve()}")
+    print(f"Rows saved: {len(latest_by_second)}")
 
 
 if __name__ == "__main__":

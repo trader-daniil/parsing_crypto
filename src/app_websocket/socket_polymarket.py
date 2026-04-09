@@ -1,100 +1,113 @@
 import asyncio
+import contextlib
+import csv
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from pathlib import Path
 
-from websockets.asyncio.client import connect
+import websockets
+
 
 WS_URL = "wss://ws-live-data.polymarket.com"
 
+BASE_DIR = Path("/Users/daniildroncev/Dev/parsing_crypto")
+OUTPUT_DIR = BASE_DIR / "data" / "raw" / "polymarket"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-def now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f UTC")
+DURATION_SECONDS = 60 * 15
+
+SUBSCRIPTION_MESSAGE = {
+    "action": "subscribe",
+    "subscriptions": [
+        {
+            "topic": "crypto_prices",
+            "type": "update",
+        }
+    ],
+}
 
 
-async def ping_loop(ws):
+async def send_ping(ws):
     while True:
         await asyncio.sleep(5)
         await ws.send("PING")
-        print(f"[{now()}] -> PING")
+        print("[PING] sent")
+
+
+def format_ts(ms: int | None) -> str:
+    if not ms:
+        return "-"
+    dt = datetime.fromtimestamp(ms / 1000, tz=UTC)
+    return dt.strftime("%Y-%m-%d %H:%M:%S.%f UTC")
+
+
+def build_output_file() -> Path:
+    timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return OUTPUT_DIR / f"polymarket_btcusdt_{timestamp_str}.csv"
 
 
 async def main():
-    print(f"[{now()}] connecting to {WS_URL} ...")
+    output_file = build_output_file()
+    start_monotonic = asyncio.get_running_loop().time()
 
-    async with connect(
-        WS_URL,
-        proxy=None,
-        open_timeout=10,
-        ping_interval=None,
-        ping_timeout=None,
-    ) as ws:
-        print(f"[{now()}] connected")
+    with output_file.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["timestamp", "polymarket"])
 
-        subscribe_msg = {
-            "action": "subscribe",
-            "subscriptions": [
-                {
-                    "topic": "crypto_prices_chainlink",
-                    "type": "*",
-                    "filters": json.dumps({"symbol": "btc/usd"}),
-                }
-            ],
-        }
+        async with websockets.connect(
+            WS_URL,
+            open_timeout=30,
+        ) as ws:
+            print(f"Connected to {WS_URL}")
 
-        await ws.send(json.dumps(subscribe_msg))
-        print(f"[{now()}] subscription sent: {subscribe_msg}")
+            await ws.send(json.dumps(SUBSCRIPTION_MESSAGE))
+            print("Subscription sent:")
+            print(json.dumps(SUBSCRIPTION_MESSAGE, ensure_ascii=False, indent=2))
 
-        ping_task = asyncio.create_task(ping_loop(ws))
+            ping_task = asyncio.create_task(send_ping(ws))
 
-        try:
-            while True:
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=15)
-                except asyncio.TimeoutError:
-                    print(f"[{now()}] no messages for 15s")
-                    continue
+            try:
+                async for message in ws:
+                    if asyncio.get_running_loop().time() - start_monotonic >= DURATION_SECONDS:
+                        print("Finished: 60 seconds elapsed")
+                        break
 
-                print(f"[{now()}] <- raw: {raw!r}")
+                    if not message or not message.strip():
+                        continue
 
-                if raw is None:
-                    print(f"[{now()}] received None, skip")
-                    continue
+                    try:
+                        data = json.loads(message)
+                    except json.JSONDecodeError:
+                        print("Message is not JSON")
+                        continue
 
-                if not isinstance(raw, str):
-                    print(f"[{now()}] non-text frame: {type(raw)}")
-                    continue
-
-                raw = raw.strip()
-                if not raw:
-                    print(f"[{now()}] empty message, skip")
-                    continue
-
-                if raw == "PONG":
-                    print(f"[{now()}] <- PONG")
-                    continue
-
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
-                    print(f"[{now()}] non-json message: {raw!r}")
-                    continue
-
-                print(f"[{now()}] parsed: {data}")
-
-                topic = data.get("topic")
-                msg_type = data.get("type")
-                payload = data.get("payload", {})
-
-                if topic in {"crypto_prices", "crypto_prices_chainlink"}:
+                    payload = data.get("payload", {})
                     symbol = payload.get("symbol")
+                    if symbol != "btcusdt":
+                        continue
+
                     price = payload.get("value")
-                    ts = payload.get("timestamp")
+                    price_timestamp = payload.get("timestamp")
+
+                    if price is None or price_timestamp is None:
+                        continue
+
+                    writer.writerow([price_timestamp, price])
+                    csv_file.flush()
+
                     print(
-                        f"[{now()}] symbol={symbol} price={price} exchange_ts={ts}"
+                        f"saved: "
+                        f"symbol={symbol} "
+                        f"price={price} "
+                        f"price_timestamp={format_ts(price_timestamp)}"
                     )
 
-        finally:
-            ping_task.cancel()
+            finally:
+                ping_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ping_task
+
+    print(f"CSV saved to: {output_file.resolve()}")
 
 
 if __name__ == "__main__":
