@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 
 
-BASE_DIR = Path("/Users/daniildroncev/Dev/parsing_crypto")
+BASE_DIR = Path(__file__).resolve().parents[2]
 BINANCE_DIR = BASE_DIR / "data" / "raw" / "binance"
 POLYMARKET_DIR = BASE_DIR / "data" / "raw" / "polymarket"
 PLOTS_DIR = BASE_DIR / "data" / "plots"
@@ -80,7 +80,10 @@ def main():
     print(f"Using Binance file: {binance_file}")
 
     polymarket_data = read_single_column_csv(polymarket_file, "polymarket")
-    binance_data = read_single_column_csv(binance_file, "binance")
+    binance_data = read_single_column_csv(binance_file, "best_bid")
+
+    print(f"Polymarket rows: {len(polymarket_data)}")
+    print(f"Binance rows: {len(binance_data)}")
 
     timestamps_ms = build_full_second_range(polymarket_data, binance_data)
     if not timestamps_ms:
@@ -107,11 +110,9 @@ def main():
     ax.legend()
     ax.grid(True)
 
-    # Показываем на оси X часы:минуты:секунды
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S", tz=UTC))
     fig.autofmt_xdate(rotation=45)
 
-    # Показываем на оси Y полные значения с 2 знаками после точки
     ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
 
     plt.tight_layout()

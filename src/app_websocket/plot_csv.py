@@ -5,7 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
-BASE_DIR = Path("/Users/daniildroncev/Dev/parsing_crypto")
+BASE_DIR = Path(__file__).resolve().parents[2]
 COMBINED_DIR = BASE_DIR / "data" / "raw" / "combined"
 PLOTS_DIR = BASE_DIR / "data" / "plots"
 PLOTS_DIR.mkdir(parents=True, exist_ok=True)
