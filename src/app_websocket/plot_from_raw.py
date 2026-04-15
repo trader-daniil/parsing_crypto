@@ -1,3 +1,4 @@
+import argparse
 import csv
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,11 +14,50 @@ POLYMARKET_DIR = BASE_DIR / "data" / "raw" / "polymarket"
 PLOTS_DIR = BASE_DIR / "data" / "plots"
 PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
+SUPPORTED_SYMBOLS = {
+    "btcusdt",
+    "ethusdt",
+    "solusdt",
+    "xrpusdt",
+}
+DEFAULT_SYMBOL = "btcusdt"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build comparison plot from raw Polymarket and Binance CSV files."
+    )
+    parser.add_argument(
+        "--symbol",
+        default=DEFAULT_SYMBOL,
+        help=(
+            "Trading symbol to plot. "
+            f"Supported values: {', '.join(sorted(SUPPORTED_SYMBOLS))}. "
+            f"Default: {DEFAULT_SYMBOL}"
+        ),
+    )
+    return parser.parse_args()
+
+
+def validate_symbol(symbol: str) -> str:
+    normalized_symbol = symbol.strip().lower()
+
+    if normalized_symbol not in SUPPORTED_SYMBOLS:
+        supported = ", ".join(sorted(SUPPORTED_SYMBOLS))
+        raise SystemExit(
+            f"Unsupported symbol: {symbol!r}. "
+            f"Supported symbols: {supported}"
+        )
+
+    return normalized_symbol
+
 
 def get_latest_file(directory: Path, pattern: str) -> Path:
     files = sorted(directory.glob(pattern))
     if not files:
-        raise FileNotFoundError(f"No files found in {directory} by pattern {pattern}")
+        raise FileNotFoundError(
+            f"No files found in {directory} by pattern {pattern}"
+        )
     return files[-1]
 
 
@@ -68,14 +108,18 @@ def forward_fill_by_timestamps(
     return result
 
 
-def build_plot_output_path(polymarket_file: Path, binance_file: Path) -> Path:
-    return PLOTS_DIR / f"plot_{polymarket_file.stem}__{binance_file.stem}.png"
+def build_plot_output_path(symbol: str, polymarket_file: Path, binance_file: Path) -> Path:
+    return PLOTS_DIR / f"plot_{symbol}__{polymarket_file.stem}__{binance_file.stem}.png"
 
 
 def main():
-    polymarket_file = get_latest_file(POLYMARKET_DIR, "polymarket_btcusdt_*.csv")
-    binance_file = get_latest_file(BINANCE_DIR, "binance_btcusdt_*.csv")
+    args = parse_args()
+    symbol = validate_symbol(args.symbol)
 
+    polymarket_file = get_latest_file(POLYMARKET_DIR, f"polymarket_{symbol}_*.csv")
+    binance_file = get_latest_file(BINANCE_DIR, f"binance_{symbol}_bid_*.csv")
+
+    print(f"Using symbol: {symbol}")
     print(f"Using Polymarket file: {polymarket_file}")
     print(f"Using Binance file: {binance_file}")
 
@@ -97,7 +141,7 @@ def main():
     polymarket_values = forward_fill_by_timestamps(timestamps_ms, polymarket_data)
     binance_values = forward_fill_by_timestamps(timestamps_ms, binance_data)
 
-    output_file = build_plot_output_path(polymarket_file, binance_file)
+    output_file = build_plot_output_path(symbol, polymarket_file, binance_file)
 
     fig, ax = plt.subplots(figsize=(14, 7))
 
@@ -106,7 +150,7 @@ def main():
 
     ax.set_xlabel("Time (UTC)")
     ax.set_ylabel("Price")
-    ax.set_title("BTCUSDT: Polymarket vs Binance")
+    ax.set_title(f"{symbol.upper()}: Polymarket vs Binance")
     ax.legend()
     ax.grid(True)
 

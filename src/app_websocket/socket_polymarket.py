@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import contextlib
 import csv
@@ -15,17 +16,40 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = BASE_DIR / "data" / "raw" / "polymarket"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-DURATION_SECONDS = 25
 
-SUBSCRIPTION_MESSAGE = {
-    "action": "subscribe",
-    "subscriptions": [
-        {
-            "topic": "crypto_prices",
-            "type": "update",
-        }
-    ],
-}
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Collect raw crypto prices from Polymarket RTDS."
+    )
+    parser.add_argument(
+        "--symbol",
+        required=True,
+        help="Symbol in lowercase format, for example: btcusdt",
+    )
+    parser.add_argument(
+        "--duration",
+        required=True,
+        type=int,
+        help="Collection duration in seconds.",
+    )
+    return parser.parse_args()
+
+
+def build_subscription_message() -> dict:
+    return {
+        "action": "subscribe",
+        "subscriptions": [
+            {
+                "topic": "crypto_prices",
+                "type": "update",
+            }
+        ],
+    }
+
+
+def build_output_file(symbol: str) -> Path:
+    timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return OUTPUT_DIR / f"polymarket_{symbol}_{timestamp_str}.csv"
 
 
 async def send_ping(ws):
@@ -35,12 +59,7 @@ async def send_ping(ws):
         print("[PING] sent")
 
 
-def build_output_file() -> Path:
-    timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    return OUTPUT_DIR / f"polymarket_btcusdt_{timestamp_str}.csv"
-
-
-async def receiver(ws, state: dict):
+async def receiver(ws, state: dict, expected_symbol: str):
     async for message in ws:
         if not message or not message.strip():
             continue
@@ -53,7 +72,7 @@ async def receiver(ws, state: dict):
         payload = data.get("payload", {})
         symbol = payload.get("symbol")
 
-        if symbol != "btcusdt":
+        if symbol != expected_symbol:
             continue
 
         price = payload.get("value")
@@ -74,7 +93,13 @@ async def receiver(ws, state: dict):
         )
 
 
-async def writer(csv_writer, csv_file, state: dict, started_at: float, duration_seconds: int):
+async def writer(
+    csv_writer,
+    csv_file,
+    state: dict,
+    started_at: float,
+    duration_seconds: int,
+):
     loop = asyncio.get_running_loop()
 
     while True:
@@ -105,7 +130,12 @@ async def writer(csv_writer, csv_file, state: dict, started_at: float, duration_
 
 
 async def main():
-    output_file = build_output_file()
+    args = parse_args()
+    symbol = args.symbol.strip().lower()
+    duration_seconds = args.duration
+
+    subscription_message = build_subscription_message()
+    output_file = build_output_file(symbol)
     loop = asyncio.get_running_loop()
     started_at = loop.time()
 
@@ -125,14 +155,20 @@ async def main():
         ) as ws:
             print(f"Connected to {WS_URL}")
 
-            await ws.send(json.dumps(SUBSCRIPTION_MESSAGE))
+            await ws.send(json.dumps(subscription_message))
             print("Subscription sent:")
-            print(json.dumps(SUBSCRIPTION_MESSAGE, ensure_ascii=False, indent=2))
+            print(json.dumps(subscription_message, ensure_ascii=False, indent=2))
 
             ping_task = asyncio.create_task(send_ping(ws))
-            receiver_task = asyncio.create_task(receiver(ws, state))
+            receiver_task = asyncio.create_task(receiver(ws, state, symbol))
             writer_task = asyncio.create_task(
-                writer(csv_writer, csv_file, state, started_at, DURATION_SECONDS)
+                writer(
+                    csv_writer,
+                    csv_file,
+                    state,
+                    started_at,
+                    duration_seconds,
+                )
             )
 
             try:

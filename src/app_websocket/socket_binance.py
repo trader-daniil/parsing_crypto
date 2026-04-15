@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import csv
 import json
@@ -8,21 +9,39 @@ from pathlib import Path
 import websockets
 
 
-WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@bookTicker"
-
 BASE_DIR = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = BASE_DIR / "data" / "raw" / "binance"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-DURATION_SECONDS = 25
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Collect raw best bid prices from Binance bookTicker stream."
+    )
+    parser.add_argument(
+        "--symbol",
+        required=True,
+        help="Symbol in lowercase format, for example: btcusdt",
+    )
+    parser.add_argument(
+        "--duration",
+        required=True,
+        type=int,
+        help="Collection duration in seconds.",
+    )
+    return parser.parse_args()
 
 
-def build_output_file() -> Path:
+def build_ws_url(symbol: str) -> str:
+    return f"wss://stream.binance.com:9443/ws/{symbol}@bookTicker"
+
+
+def build_output_file(symbol: str) -> Path:
     timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    return OUTPUT_DIR / f"binance_btcusdt_bid_{timestamp_str}.csv"
+    return OUTPUT_DIR / f"binance_{symbol}_bid_{timestamp_str}.csv"
 
 
-async def receiver(ws, state: dict):
+async def receiver(ws, state: dict, expected_symbol_upper: str):
     async for message in ws:
         if not message or not message.strip():
             continue
@@ -35,7 +54,7 @@ async def receiver(ws, state: dict):
         symbol = data.get("s")
         bid = data.get("b")
 
-        if symbol != "BTCUSDT" or bid is None:
+        if symbol != expected_symbol_upper or bid is None:
             continue
 
         state["latest_bid"] = bid
@@ -48,7 +67,13 @@ async def receiver(ws, state: dict):
         )
 
 
-async def writer(csv_writer, csv_file, state: dict, started_at: float, duration_seconds: int):
+async def writer(
+    csv_writer,
+    csv_file,
+    state: dict,
+    started_at: float,
+    duration_seconds: int,
+):
     loop = asyncio.get_running_loop()
 
     while True:
@@ -76,7 +101,13 @@ async def writer(csv_writer, csv_file, state: dict, started_at: float, duration_
 
 
 async def main():
-    output_file = build_output_file()
+    args = parse_args()
+    symbol = args.symbol.strip().lower()
+    expected_symbol_upper = symbol.upper()
+    duration_seconds = args.duration
+    ws_url = build_ws_url(symbol)
+    output_file = build_output_file(symbol)
+
     loop = asyncio.get_running_loop()
     started_at = loop.time()
 
@@ -89,12 +120,20 @@ async def main():
         csv_writer = csv.writer(csv_file)
         csv_writer.writerow(["timestamp", "best_bid"])
 
-        async with websockets.connect(WS_URL) as ws:
-            print(f"Connected to {WS_URL}")
+        async with websockets.connect(ws_url) as ws:
+            print(f"Connected to {ws_url}")
 
-            receiver_task = asyncio.create_task(receiver(ws, state))
+            receiver_task = asyncio.create_task(
+                receiver(ws, state, expected_symbol_upper)
+            )
             writer_task = asyncio.create_task(
-                writer(csv_writer, csv_file, state, started_at, DURATION_SECONDS)
+                writer(
+                    csv_writer,
+                    csv_file,
+                    state,
+                    started_at,
+                    duration_seconds,
+                )
             )
 
             done, pending = await asyncio.wait(
