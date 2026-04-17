@@ -1,47 +1,81 @@
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, UTC
 from zoneinfo import ZoneInfo
-import requests
+import json
 
+import requests
 
 
 def get_btc_5m_slug(dt: datetime | None = None) -> str:
     """
     Генерирует slug вида btc-updown-5m-<timestamp>
-    для текущего (или переданного) времени
+    для текущего или переданного времени.
     """
-
-    # 1. текущее время (UTC)
     if dt is None:
         dt = datetime.now(UTC)
 
-    # 2. переводим в New York (ET с учетом DST)
     ny_tz = ZoneInfo("America/New_York")
     dt_ny = dt.astimezone(ny_tz)
 
-    # 3. округляем ВНИЗ до 5 минут
     minute = (dt_ny.minute // 5) * 5
     dt_floor = dt_ny.replace(minute=minute, second=0, microsecond=0)
 
-    # 4. обратно в UTC
     dt_utc = dt_floor.astimezone(UTC)
-
-    # 5. timestamp
     ts = int(dt_utc.timestamp())
 
-    # 6. slug
     return f"btc-updown-5m-{ts}"
 
-slug = get_btc_5m_slug()
 
-url = f"https://gamma-api.polymarket.com/events/slug/{slug}"
+def fetch_event_by_slug(slug: str) -> dict | None:
+    """
+    Делает запрос к Polymarket по slug и возвращает JSON-ответ.
+    Если событие не найдено, возвращает None.
+    """
+    url = f"https://gamma-api.polymarket.com/events/slug/{slug}"
+    response = requests.get(url, timeout=10)
 
-response = requests.get(url, timeout=10)
+    if response.status_code == 404:
+        return None
 
-if response.status_code == 200:
-    data = response.json()
+    response.raise_for_status()
+    return response.json()
+
+
+def extract_clob_token_ids(event_data: dict) -> list[str]:
+    """
+    Достаёт clobTokenIds из первого market внутри event_data
+    и возвращает их как список строк.
+    """
+    markets = event_data.get("markets", [])
+    if not markets:
+        return []
+
+    clob_token_ids_raw = markets[0].get("clobTokenIds")
+    if not clob_token_ids_raw:
+        return []
+
+    return json.loads(clob_token_ids_raw)
+
+
+def main() -> None:
+    slug = get_btc_5m_slug()
+    data = fetch_event_by_slug(slug)
+
+    if data is None:
+        print("NOT FOUND:", slug)
+        return
+
     print("FOUND:", slug)
 
-    for market in data.get("markets", []):
-        print(market["id"], "|", market["question"])
-else:
-    print("NOT FOUND:", slug)
+    token_ids = extract_clob_token_ids(data)
+
+    if not token_ids:
+        print("clobTokenIds not found")
+        return
+
+    print("clobTokenIds:")
+    for token_id in token_ids:
+        print(token_id)
+
+
+if __name__ == "__main__":
+    main()
